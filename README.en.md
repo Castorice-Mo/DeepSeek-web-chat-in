@@ -55,6 +55,13 @@ file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
 
 Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appears in the sidebar.
 
+### Path C: download the Release (recommended for end users)
+
+Grab `castorice-mo-chat-in-dsh-<version>.tgz` from
+[Releases](https://github.com/Castorice-Mo/DeepSeek-web-chat-in/releases) and point the DSH plugin
+installer at it (`file:<download-dir>/...tgz`). The tarball **bundles the front-end build** — no
+Node, no build step, no download on install.
+
 ### The repository holds code only
 
 `webview/dist` (the official chat-demo build — **153 files, 4.25 MB**) is **not tracked**. Fetch it after cloning:

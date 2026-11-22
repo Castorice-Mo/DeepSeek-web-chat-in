@@ -75,6 +75,14 @@ file:<下载目录>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
 
 > 本机只跑过方式 A；方式 B 若安装器不认 `file:`，把 tgz 解压后改用方式 A 的 `link:` 指向解压目录即可。
 
+### 方式 C：从 Release 下载（推荐给普通用户）
+
+到 [Releases](https://github.com/Castorice-Mo/DeepSeek-web-chat-in/releases) 下载
+`castorice-mo-chat-in-dsh-<版本>.tgz`，在 DSH 的插件安装入口填它的绝对路径，或写成
+`file:<下载目录>/castorice-mo-chat-in-dsh-<版本>.tgz`。
+
+这个包**自带前端产物**，不需要 Node、不需要构建、不需要联网取件，装完重启 DSH 即可。
+
 ### 源码仓库只含代码
 
 `webview/dist`（DeepSeek 官方 chat-demo 的构建，**153 个文件、4.25 MB**）**不入库**——仓库里只保留自有代码。
