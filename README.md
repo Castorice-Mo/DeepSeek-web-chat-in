@@ -75,6 +75,18 @@ file:<下载目录>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
 
 > 本机只跑过方式 A；方式 B 若安装器不认 `file:`，把 tgz 解压后改用方式 A 的 `link:` 指向解压目录即可。
 
+### 源码仓库只含代码
+
+`webview/dist`（DeepSeek 官方 chat-demo 的构建，**153 个文件、4.25 MB**）**不入库**——仓库里只保留自有代码。
+克隆后先把它取回来：
+
+```bash
+npm run fetch:webview            # 按 package.json 里钉住的版本取回
+CHAT_DEMO_VERSION=1.3.2 npm run fetch:webview   # 也可指定上游版本
+```
+
+已核对：取回的产物与上游 npm 包 `chat-in-dsh@1.3.2` 内那份**逐文件 SHA256 相同**，本仓库未做任何改动。
+
 ### 装完
 
 重启 DSH（或重载插件），侧栏面板列表出现「**网页版**」。
@@ -288,7 +300,8 @@ chat-in-dsh/
 │  ├─ dsh-import.js      DSH 会话 → 面板格式
 │  ├─ protocol.js        上游地址与常量
 │  └─ sha3_wasm_bg.wasm  官方 PoW 求解 wasm（26 KB）
-├─ webview/dist/         官方 chat-demo 构建产物（仅打品牌与转发落点的补丁）
+├─ scripts/fetch-webview.mjs  取回 webview/dist（该目录不入库）
+├─ webview/dist/         官方 chat-demo 构建产物（不入库，由上面的脚本取回）
 ├─ locale/               中英文案
 └─ icon.svg              面板图标
 ```

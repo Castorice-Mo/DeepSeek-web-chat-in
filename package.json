@@ -38,7 +38,8 @@
     "webview/dist",
     "webview/brand-mark.svg",
     "locale",
-    "icon.svg"
+    "icon.svg",
+    "scripts"
   ],
   "dsh": {
     "bundle": {
@@ -65,5 +66,7 @@
     }
   },
   "author": "Castorice-Mo",
-  "scripts": {}
+  "scripts": {
+    "fetch:webview": "node scripts/fetch-webview.mjs"
+  }
 }

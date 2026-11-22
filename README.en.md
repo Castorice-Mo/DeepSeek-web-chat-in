@@ -55,6 +55,16 @@ file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
 
 Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appears in the sidebar.
 
+### The repository holds code only
+
+`webview/dist` (the official chat-demo build — **153 files, 4.25 MB**) is **not tracked**. Fetch it after cloning:
+
+```bash
+npm run fetch:webview
+```
+
+Verified: the fetched tree is byte-identical (SHA-256 per file) to the one shipped inside the upstream npm package `chat-in-dsh@1.3.2`.
+
 ## Usage
 
 1. Open the panel, click the **⚙** in the bottom-right corner.

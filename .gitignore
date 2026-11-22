@@ -1,4 +1,6 @@
 # 忽略构建产物与依赖，保证仓库里只有源码与文档
+# 前端产物由 scripts/fetch-webview.mjs 按版本从上游 npm 包取回
+webview/dist/
 node_modules/
 *.tgz
 *.log
