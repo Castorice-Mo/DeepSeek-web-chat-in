@@ -88,6 +88,9 @@ CHAT_DEMO_VERSION=1.3.2 npm run fetch:webview
 
 已核对：取回的产物与上游 npm 包 `chat-in-dsh@1.3.2` 内那份**逐文件 SHA256 相同**，本仓库未做任何改动。
 
+> 用 `github:` 规格安装时，pnpm 会拦截这个 `prepare` 脚本（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`），
+> 需要在 DSH 的安装提示里批准一次构建；最稳的路径仍是「克隆 → `npm install` → 在 DSH 里用 `link:` 指向该目录」。
+
 ### 装完
 
 重启 DSH（或重载插件），侧栏面板列表出现「**网页版**」。

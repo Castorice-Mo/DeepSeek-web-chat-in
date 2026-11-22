@@ -66,6 +66,8 @@ npm run fetch:webview  # or fetch it explicitly
 
 Verified: the fetched tree is byte-identical (SHA-256 per file) to the one shipped inside the upstream npm package `chat-in-dsh@1.3.2`.
 
+> Installing with a `github:` spec makes pnpm block the `prepare` script (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`); approve that build once in DSH, or prefer: clone → `npm install` → point DSH at the directory with `link:`.
+
 ## Usage
 
 1. Open the panel, click the **⚙** in the bottom-right corner.
