@@ -3,7 +3,7 @@
 把 DeepSeek 官网的对话界面嵌进 DeepSeek Harness（DSH）的侧栏，**走自己的网页账号额度**，
 对话实时写进 mneme 记忆库，外观跟随宿主皮肤与壁纸。
 
-版本 `2.0.0-dshw.1`　|　MIT　|　上游 [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
+版本 `2.0.0-dshw.2`　|　MIT　|　上游 [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
 
 仓库地址：https://github.com/Castorice-Mo/DeepSeek-web-chat-in
 
@@ -64,13 +64,13 @@ link:<本插件所在目录>
 ### 方式 B：分发包（给别人用）
 
 ```
-castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz   # 约 1.8 MB
+castorice-mo-chat-in-dsh-2.0.0-dshw.2.tgz   # 约 1.8 MB
 ```
 
 在插件安装入口填入 tarball 的绝对路径，或写成 pnpm 的 file 规格：
 
 ```
-file:<下载目录>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
+file:<下载目录>/castorice-mo-chat-in-dsh-2.0.0-dshw.2.tgz
 ```
 
 > 本机只跑过方式 A；方式 B 若安装器不认 `file:`，把 tgz 解压后改用方式 A 的 `link:` 指向解压目录即可。

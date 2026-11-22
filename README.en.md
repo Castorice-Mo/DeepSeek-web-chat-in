@@ -4,7 +4,7 @@ Embed the official DeepSeek web chat UI in the DeepSeek Harness (DSH) sidebar,
 **billing your own web-account quota**, streaming every reply into the memory store,
 and adapting to whatever theme and wallpaper the host uses.
 
-Version `2.0.0-dshw.1` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
+Version `2.0.0-dshw.2` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
 
 Repository: https://github.com/Castorice-Mo/DeepSeek-web-chat-in
 
@@ -50,7 +50,7 @@ link:<path-to-this-directory>
 or at the packaged tarball:
 
 ```
-file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
+file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.2.tgz
 ```
 
 Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appears in the sidebar.

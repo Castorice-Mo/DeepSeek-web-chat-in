@@ -5,7 +5,9 @@
  * 另外在会话的右键菜单里加一行「导入到网页版」——一次性复制，复制完两边各管各的。
  */
 window.__ModuleLoader__.load({
-  id: 'chat-in-dsh',
+  // 模块 id 必须与 package.json 的包名完全一致（含 scope），否则宿主的客户端
+  // 模块图找不到这一行，浏览器半部（侧栏「网页版」入口）不会加载。
+  id: '@castorice-mo/chat-in-dsh',
   factory(require) {
     const React = require('react')
     const h = React.createElement
