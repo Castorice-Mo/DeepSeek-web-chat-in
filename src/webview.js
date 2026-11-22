@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { DEFAULT_BASE_URL, TOKEN_HEADER, apiRoot, isInside } from './protocol.js'
 import { ackPending, listPending, readDshSession, stageImport } from './dsh-import.js'
 import { complete, readToken, rememberExchange, textOfContent, tokenStatus } from './web-bridge.js'
-import { importHistory, readKnown } from './history.js'
+import { importHistory, readKnown, syncHistory } from './history.js'
 
 /** 构建产物位置（包内自带，安装即可用）。 */
 const DIST = fileURLToPath(new URL('../webview/dist/', import.meta.url))
@@ -536,6 +536,24 @@ export function createWebview(ctx, config, home) {
     if (pathname === '/webchat/api/history/import' && method === 'POST') {
       try {
         sendJson(res, { ok: true, ...(await importHistory(home)) })
+      } catch (error) {
+        sendJson(res, { ok: false, error: String(error?.message ?? error) }, error?.status ?? 500)
+      }
+      return
+    }
+
+    // 增量同步：面板打开前、窗口重新获焦时由浏览器半边调用。
+    // 只抓官网有更新、我们还没收的会话；没新东西时开销就是一次列表请求。
+    if (pathname === '/webchat/api/sync' && method === 'POST') {
+      try {
+        const result = await syncHistory(home, { limit: 30, budgetMs: 15000 })
+        let pending = 0
+        try {
+          pending = fs.readdirSync(path.join(home, 'webchat-imports')).filter(name => name.endsWith('.json')).length
+        } catch {
+          pending = 0
+        }
+        sendJson(res, { ok: true, ...result, pending })
       } catch (error) {
         sendJson(res, { ok: false, error: String(error?.message ?? error) }, error?.status ?? 500)
       }

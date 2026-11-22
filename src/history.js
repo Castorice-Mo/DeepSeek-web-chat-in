@@ -169,11 +169,104 @@ function fingerprint(converted) {
   return users.length === 0 ? undefined : createHash('sha1').update(users.join('\u0000')).digest('hex')
 }
 
+/** 增量同步的「已收」记录：每个会话最后一次收下的官网时间戳（秒）。 */
+function syncStateFile(home) {
+  return path.join(storeDir(home), 'sync-state.json')
+}
+
+export function readSyncState(home) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(syncStateFile(home), 'utf8'))
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSyncState(home, state) {
+  try {
+    fs.mkdirSync(storeDir(home), { recursive: true })
+    fs.writeFileSync(syncStateFile(home), JSON.stringify(state))
+  } catch {
+    // 记不住只会让下次多抓一遍，不影响正确性。
+  }
+}
+
+function loadIndex(home) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(storeDir(home), 'session-index.json'), 'utf8'))?.index ?? {}
+  } catch {
+    return {}
+  }
+}
+
+function saveIndex(home, index) {
+  try {
+    fs.mkdirSync(storeDir(home), { recursive: true })
+    fs.writeFileSync(
+      path.join(storeDir(home), 'session-index.json'),
+      JSON.stringify({ at: new Date().toISOString(), index }),
+    )
+  } catch {
+    // 索引写不下去时，续聊退化为「新起一条线程」，不影响导入本身。
+  }
+}
+
+/** 把一条官网会话暂存给面板，并记下指纹（续聊要靠它找回原线程）。 */
+function stageOne(home, converted, staging, index) {
+  const key = fingerprint(converted)
+  if (key !== undefined) index[key] = { id: converted.id, title: converted.title, at: converted.updatedAt }
+  fs.writeFileSync(
+    path.join(staging, `${converted.id}.json`),
+    JSON.stringify({ ...converted, importId: createHash('sha1').update(`${converted.id}:${Date.now()}`).digest('hex') }),
+  )
+  return converted.messages.length
+}
+
 /**
- * 执行一次导入。
+ * 并发抓一批会话并暂存。
+ * @param {number} [deadline] 到点就不再开新的会话（已发出的请求照常收尾）。
+ */
+async function drain(token, queue, known, home, staging, index, state, deadline) {
+  const counters = { sessions: 0, messages: 0, skipped: 0 }
+  const worker = async () => {
+    while (queue.length > 0) {
+      if (deadline !== undefined && Date.now() > deadline) return
+      const id = queue.shift()
+      if (id === undefined) return
+      let list
+      try {
+        list = await fetchMessages(token, id)
+      } catch {
+        list = undefined
+      }
+      if (!Array.isArray(list) || list.length === 0) {
+        counters.skipped += 1
+        continue
+      }
+      const converted = convertSession({ id, title: known[id]?.title, updated_at: (known[id]?.at ?? 0) }, list)
+      if (converted === undefined) {
+        counters.skipped += 1
+        continue
+      }
+      try {
+        counters.messages += stageOne(home, converted, staging, index)
+        counters.sessions += 1
+        state[id] = { at: Number(known[id]?.at ?? 0), title: String(known[id]?.title ?? '') }
+      } catch {
+        counters.skipped += 1
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
+  return counters
+}
+
+/**
+ * 全量导入（⚙ →「接入历史」）。known 里的每个会话都会重抓一遍。
  * @returns {Promise<{sessions:number, messages:number, indexed:number, skipped:number, known:number}>}
  */
-export async function importHistory(home, options = {}) {
+export async function importHistory(home) {
   const token = readToken(home)
   if (!token) throw Object.assign(new Error('还没有官网令牌：请先点「登录官网」'), { status: 401 })
 
@@ -188,58 +281,47 @@ export async function importHistory(home, options = {}) {
 
   const staging = path.join(home, 'webchat-imports')
   fs.mkdirSync(staging, { recursive: true })
-  const indexFile = path.join(storeDir(home), 'session-index.json')
-  let index = {}
-  try {
-    index = JSON.parse(fs.readFileSync(indexFile, 'utf8'))?.index ?? {}
-  } catch {
-    index = {}
+  const index = loadIndex(home)
+  const state = readSyncState(home)
+  const counters = await drain(token, [...ids], known, home, staging, index, state)
+  saveIndex(home, index)
+  writeSyncState(home, state)
+  return { ...counters, indexed: Object.keys(index).length, known: ids.length }
+}
+
+/**
+ * 增量同步：面板打开前、窗口重新获焦时调它。
+ *
+ * 只抓「官网更新过、而我们还没收」的会话——没有新东西时只花一次列表请求；
+ * 有新的才按 limit 条数抓正文，到 deadline 就收手，剩下的留给下次。
+ * 这样既不轮询、也不至于把账号打成异常流量。
+ */
+export async function syncHistory(home, options = {}) {
+  const limit = Number.isInteger(options.limit) && options.limit > 0 ? options.limit : 30
+  const budgetMs = Number.isFinite(options.budgetMs) && options.budgetMs > 0 ? options.budgetMs : 20000
+  const token = readToken(home)
+  if (!token) {
+    return { token: false, sessions: 0, messages: 0, skipped: 0, known: Object.keys(readKnown(home)).length, candidates: 0, more: 0 }
   }
 
-  let sessions = 0
-  let messages = 0
-  let skipped = 0
-
-  const queue = [...ids]
-  const worker = async () => {
-    while (queue.length > 0) {
-      const id = queue.shift()
-      if (id === undefined) return
-      let list
-      try {
-        list = await fetchMessages(token, id)
-      } catch {
-        list = undefined
-      }
-      if (!Array.isArray(list) || list.length === 0) {
-        skipped += 1
-        continue
-      }
-      const converted = convertSession({ id, title: known[id]?.title, updated_at: (known[id]?.at ?? 0) }, list)
-      if (converted === undefined) {
-        skipped += 1
-        continue
-      }
-      const key = fingerprint(converted)
-      if (key !== undefined) index[key] = { id: converted.id, title: converted.title, at: converted.updatedAt }
-      try {
-        fs.writeFileSync(
-          path.join(staging, `${converted.id}.json`),
-          JSON.stringify({ ...converted, importId: createHash('sha1').update(`${converted.id}:${Date.now()}`).digest('hex') }),
-        )
-        sessions += 1
-        messages += converted.messages.length
-      } catch {
-        skipped += 1
-      }
-    }
+  const listed = await fetchList(token).catch(() => [])
+  recordSessions(home, listed)
+  const known = readKnown(home)
+  const state = readSyncState(home)
+  const candidates = Object.entries(known)
+    .filter(([id, meta]) => state[id] === undefined || Number(meta?.at ?? 0) > Number(state[id]?.at ?? 0))
+    .sort((left, right) => Number(right[1]?.at ?? 0) - Number(left[1]?.at ?? 0))
+  const batch = candidates.slice(0, limit).map(([id]) => id)
+  const more = Math.max(0, candidates.length - batch.length)
+  if (batch.length === 0) {
+    return { token: true, sessions: 0, messages: 0, skipped: 0, known: Object.keys(known).length, candidates: 0, more: 0 }
   }
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
 
-  try {
-    fs.writeFileSync(indexFile, JSON.stringify({ at: new Date().toISOString(), index }))
-  } catch {
-    // 索引写不下去时，续聊退化为「新起一条线程」，不影响导入本身。
-  }
-  return { sessions, messages, indexed: Object.keys(index).length, skipped, known: ids.length }
+  const staging = path.join(home, 'webchat-imports')
+  fs.mkdirSync(staging, { recursive: true })
+  const index = loadIndex(home)
+  const counters = await drain(token, batch, known, home, staging, index, state, Date.now() + budgetMs)
+  saveIndex(home, index)
+  writeSyncState(home, state)
+  return { token: true, ...counters, known: Object.keys(known).length, candidates: candidates.length, more }
 }

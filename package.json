@@ -1,6 +1,6 @@
 {
   "name": "@castorice-mo/chat-in-dsh",
-  "version": "2.0.0-dshw.2",
+  "version": "2.0.0-dshw.3",
   "type": "module",
   "description": "在 DeepSeek Harness 里嵌一个 DeepSeek 网页版面板（本地分叉）：走自己的网页账号额度、回答实时进 mneme 记忆库、自动接入账号历史、外观跟随宿主壁纸。",
   "license": "MIT",

@@ -4,7 +4,7 @@ Embed the official DeepSeek web chat UI in the DeepSeek Harness (DSH) sidebar,
 **billing your own web-account quota**, streaming every reply into the memory store,
 and adapting to whatever theme and wallpaper the host uses.
 
-Version `2.0.0-dshw.2` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
+Version `2.0.0-dshw.3` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
 
 Repository: https://github.com/Castorice-Mo/DeepSeek-web-chat-in
 
@@ -32,6 +32,7 @@ toggles were simply unreachable. Dropping the site into a panel directly hits th
 | Real-time memory | Every exchange becomes a `history` entry in mneme | `rememberExchange()` |
 | Self-service sign-in | ⚙ → “Sign in”; the loopback proxy captures the token (0600) | `src/site-proxy.js` |
 | History import | Captures the site's own session list + one active fetch (≤100), converts and stages it | `POST /webchat/api/history/import` |
+| Incremental sync | On panel open / window refocus, fetches only sessions the site changed since last pickup; an idle run costs one list request | `POST /webchat/api/sync` |
 | Continue old threads | Fingerprints the user-message sequence to resume the original official thread | `src/history.js` |
 | Adaptive wallpaper | Transparent surfaces; light/dark glass follows the host | injected `SKIN_CSS` / `SKIN_SCRIPT` |
 
@@ -50,7 +51,7 @@ link:<path-to-this-directory>
 or at the packaged tarball:
 
 ```
-file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.2.tgz
+file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.3.tgz
 ```
 
 Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appears in the sidebar.
@@ -80,8 +81,9 @@ Verified: the fetched tree is byte-identical (SHA-256 per file) to the one shipp
 1. Open the panel, click the **⚙** in the bottom-right corner.
 2. **Sign in** — log in with *your own* web account in the window that opens. The token is
    captured by the local loopback proxy (`127.0.0.1:8899`, falling forward to 8910).
-3. **Import history**, then **Reload** — your account's conversations show up, and asking
-   a follow-up continues the original official thread.
+3. **Import history** once for the full backfill (worth doing on an old account). After that you
+   do not need to click it again: opening the panel or switching back to DSH runs an incremental
+   sync, which brings in conversations created or continued on the official site.
 
 Everything persistent stays local under `~/.dsh/deepseek-web/` (token, cookie jar, session
 list, thread fingerprints) and `~/.dsh/webchat-imports/` (staging for the panel import).
@@ -123,6 +125,16 @@ History import (a real run):
 { "ok": true, "sessions": 100, "messages": 550, "indexed": 78, "skipped": 0, "known": 100 }
 ```
 
+Incremental sync (real runs: 100 uncached sessions pending, then nothing new):
+
+```json
+{ "ok": true, "sessions": 30, "messages": 215, "known": 100, "candidates": 90, "more": 60, "pending": 30 }
+{ "ok": true, "sessions": 0,  "messages": 0,   "known": 100, "candidates": 0,  "more": 0,  "pending": 0 }
+```
+
+Sessions already picked up are recorded in `~/.dsh/deepseek-web/sync-state.json`, so an
+unchanged `updated_at` is never fetched twice.
+
 Unsupported endpoints answer honestly:
 
 ```json
@@ -135,10 +147,20 @@ Tokens, cookies, session lists and fingerprints live only under `~/.dsh/deepseek
 (mode 0600). No telemetry, no third-party uploads. Imported history is a local copy;
 only a follow-up message is written back to the official thread.
 
+Sync always reads **the account you signed in with on this machine**: the token and cookie jar
+come from that one login, the plugin holds no other credential and cannot reach anyone else's
+account. Incremental sync only issues read requests to `chat.deepseek.com` (list + messages);
+conversation content is never uploaded anywhere else, and nothing server-side is created or
+modified by it.
+
 ## Known limitations
 
-- The session-list endpoint has no working pagination (`count` is capped at 100). Scroll the
-  site sidebar in the sign-in window so the proxy captures more, then import again.
+- The session-list endpoint has no working pagination (`count` is capped at 100). Auto-sync
+  therefore only covers additions and updates inside the newest 100 sessions; for older ones,
+  scroll the site sidebar in the sign-in window so the proxy captures more, or run a full import.
+- Sync is not realtime: no polling and no long-lived connection. It is triggered on panel mount
+  and on window refocus (throttled to 5 minutes), so a conversation just created on the site
+  arrives when you switch back.
 - Attachment / voice endpoints are unsupported (501); search results depend on the site.
 - The model id is fixed to `deepseek-flash`; the actual model is chosen upstream.
 - Site redesigns may break the interfaces — update the plugin when that happens.

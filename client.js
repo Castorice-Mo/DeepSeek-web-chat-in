@@ -76,6 +76,46 @@ window.__ModuleLoader__.load({
       for (const listener of importBus.listeners) listener(importBus.token)
     }
 
+    /**
+     * 官网 → 面板 的增量同步。
+     *
+     * 面板自己是离线复刻版，只读本地 IndexedDB，从不向服务器要列表；
+     * 而面板「收下暂存」的时机固定在 iframe 启动的那一刻。所以：
+     *   1. 打开面板 / 窗口重新获焦时，先让宿主抓一次「官网有更新、我们还没收」的会话；
+     *   2. 真的抓到东西（或有旧暂存没被收走）时，把 iframe 重挂一次，面板启动时自然就收了。
+     * 不在面板里打字时打断用户：焦点在面板内就先不动，等下次打开再收。
+     */
+    const SYNC_FIRST_GAP = 60 * 1000
+    const SYNC_MIN_GAP = 5 * 60 * 1000
+    let lastSyncAt = 0
+    let syncInFlight = null
+    const requestSync = (gap = SYNC_MIN_GAP) => {
+      if (syncInFlight !== null) return syncInFlight
+      if (Date.now() - lastSyncAt < gap) return Promise.resolve(undefined)
+      syncInFlight = fetch('/webchat/api/sync', { method: 'POST' })
+        .then(response => (response.ok ? response.json() : undefined))
+        .catch(() => undefined)
+        .then((data) => {
+          lastSyncAt = Date.now()
+          return data
+        })
+        .finally(() => {
+          syncInFlight = null
+        })
+      return syncInFlight
+    }
+    /** 焦点是否落在面板里面（正在打字/操作时不要重挂 iframe）。 */
+    const frameIsBusy = (iframe) => {
+      try {
+        const doc = iframe?.contentDocument
+        if (!doc) return false
+        const active = doc.activeElement
+        return active !== null && active !== doc.body && active !== doc.documentElement
+      } catch (_error) {
+        return false
+      }
+    }
+
     // 浏览器式页面缩放：官方网页版由 Chromium 自带 Ctrl+滚轮/Ctrl+± 缩放；
     // DSH 的 Electron 内容区没有这层行为，所以在面板 iframe 内补上，不加任何设置界面。
     // v2 key：旧实现把“没有存储值”误判成 0（再钳到 80%），换 key 让首次安装回到 100%。
@@ -280,8 +320,9 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function PanelFrame({ reloadToken }) {
-      const ref = React.useRef(null)
+    function PanelFrame({ reloadToken, frameRef }) {
+      const localRef = React.useRef(null)
+      const ref = frameRef ?? localRef
       React.useEffect(() => {
         const iframe = ref.current
         if (!iframe) return undefined
@@ -365,7 +406,7 @@ window.__ModuleLoader__.load({
           const res = await fetch('/webchat/api/history/import', { method: 'POST' })
           const data = await res.json()
           if (data.ok) {
-            setNote(`已准备 ${data.sessions} 条会话（${data.messages} 条消息）。点「重新载入」，面板就会收下`)
+            setNote(`已准备 ${data.sessions} 条会话（${data.messages} 条消息）：重开面板会自动收下，也可点「重新载入」立刻收`)
           } else {
             setNote(`导入失败：${data.error || '未知错误'}`)
           }
@@ -464,7 +505,41 @@ window.__ModuleLoader__.load({
     function Panel() {
       const [token, setToken] = React.useState(importBus.token)
       const [topInset, setTopInset] = React.useState(0)
+      const [frameKey, setFrameKey] = React.useState(0)
       const ref = React.useRef(null)
+      const frameRef = React.useRef(null)
+      const bumped = React.useRef(false)
+
+      // 收到同步结果：有新暂存（或上一次没被收走的暂存）就把 iframe 重挂一次，
+      // 让面板 boot 时自己走 /webchat/api/import/pending。
+      const applySync = React.useCallback((data) => {
+        if (data === null || typeof data !== 'object' || data.ok !== true) return
+        const fresh = Number(data.sessions ?? 0) > 0
+        const pending = Number(data.pending ?? 0) > 0
+        if (!fresh && !pending) return
+        if (bumped.current) return
+        if (frameIsBusy(frameRef.current)) return
+        bumped.current = true
+        setFrameKey(value => value + 1)
+      }, [])
+
+      React.useEffect(() => {
+        let alive = true
+        requestSync(SYNC_FIRST_GAP).then((data) => {
+          if (alive) applySync(data)
+        })
+        const onFocus = () => {
+          requestSync().then((data) => {
+            if (alive) applySync(data)
+          })
+        }
+        window.addEventListener('focus', onFocus)
+        return () => {
+          alive = false
+          window.removeEventListener('focus', onFocus)
+        }
+      }, [applySync])
+
       React.useEffect(() => {
         const listener = (value) => setToken(value)
         importBus.listeners.add(listener)
@@ -506,7 +581,7 @@ window.__ModuleLoader__.load({
           position: 'relative',
         },
       },
-        h('div', { style: { flex: 1, minWidth: 0 } }, h(PanelFrame, { key: token, reloadToken: token })),
+        h('div', { style: { flex: 1, minWidth: 0 } }, h(PanelFrame, { key: `${token}:${frameKey}`, reloadToken: token, frameRef })),
         h(AccountDock))
     }
 
