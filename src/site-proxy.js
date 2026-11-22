@@ -13,6 +13,7 @@ import https from 'node:https'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { recordChannelEvent } from './web-bridge.js'
 import { recordSessions } from './history.js'
 
 export const UPSTREAM_HOST = 'chat.deepseek.com'
@@ -41,8 +42,11 @@ let saveTimer = null
 let lastBearer = ''
 let listeningPort = 0
 let loaded = false
+/** 由插件入口传进来的 DSH_HOME；没传时才退回环境变量/家目录。 */
+let storeRoot = ''
 
 function storeDir() {
+  if (storeRoot) return path.join(storeRoot, 'deepseek-web')
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   return path.join(home, 'deepseek-web')
 }
@@ -134,6 +138,8 @@ function rememberBearer(req) {
       encoding: 'utf8',
       mode: 0o600,
     })
+    // 只记「什么时候抄到过」，令牌本身绝不出现在日志里。
+    recordChannelEvent(storeDir(), { kind: 'token-captured', status: 200, message: '登录窗口里抄到站点令牌' })
   } catch {
     // 落盘失败仍可继续转发。
   }
@@ -225,8 +231,7 @@ function forward(req, res) {
               const parsed = JSON.parse(body.toString('utf8'))
               const list = parsed?.data?.biz_data?.chat_sessions
               if (Array.isArray(list)) {
-                const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
-                recordSessions(home, list)
+                recordSessions(storeRoot || process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), list)
               }
             } catch {
               // 截获失败不影响页面。
@@ -341,9 +346,11 @@ function forward(req, res) {
 /**
  * 起代理。
  * @param {number} port 首选端口（8899 与旧面板同源，浏览器里既有登录态可以复用）
+ * @param {string} [home] DSH_HOME；令牌与 Cookie 落在 `<home>/deepseek-web/`，与读取方同一处
  * @returns {{ url: () => string, stop: () => void }}
  */
-export function startSiteProxy(port = DEFAULT_PORT) {
+export function startSiteProxy(port = DEFAULT_PORT, home = '') {
+  storeRoot = typeof home === 'string' ? home : ''
   const server = http.createServer((req, res) => {
     try {
       forward(req, res)

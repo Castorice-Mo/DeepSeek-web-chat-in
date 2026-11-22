@@ -17,7 +17,8 @@ import { pipeline } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 import { DEFAULT_BASE_URL, TOKEN_HEADER, apiRoot, isInside } from './protocol.js'
 import { ackPending, listPending, readDshSession, stageImport } from './dsh-import.js'
-import { complete, readToken, rememberExchange, textOfContent, tokenStatus } from './web-bridge.js'
+import { channelHealth, complete, recordChannelEvent, rememberExchange, textOfContent } from './web-bridge.js'
+import { uploadForPanel } from './files.js'
 import { importHistory, readKnown, syncHistory } from './history.js'
 
 /** 构建产物位置（包内自带，安装即可用）。 */
@@ -219,10 +220,103 @@ try{
 setTimeout(pin,300);setTimeout(pin,1200);
 })();</script>`
 
+/**
+ * 通道守卫：把「发不出去」的原因摆到面板里。
+ *
+ * 上游面板发送失败时只会弹一句「消息未能发送，请稍后重试」——没有状态码、没有原因，
+ * 报障的人只能猜。这个脚本活在面板页面里，做两件事：
+ *   1. 启动时、窗口回到前台时问一次 `/webchat/api/channel`：令牌缺失或已失效，
+ *      就地在顶部挂一条中文横幅（写着该点哪里），不必等发送失败；
+ *   2. 给 fetch 包一层，只盯 messages 接口：非 2xx 读正文、SSE 里的 error 事件读
+ *      message，把真实原因显示出来。
+ * 它只读、只显示，不改写面板自己的请求与响应。
+ */
+const CHANNEL_SCRIPT = `<script>(function(){
+if(window.__dshChannelGuard)return;window.__dshChannelGuard=1;
+var box=null,label=null,state={token:null,site:"",wasm:true,last:null},failAt=0,failText="";
+function flat(v){return String(v==null?"":v).replace(/\\s+/g," ").slice(0,220)}
+function banner(){
+  if(box)return box;
+  box=document.createElement("div");
+  box.id="dsh-channel-banner";
+  box.style.cssText="position:fixed;left:0;right:0;top:0;z-index:2147483000;display:none;box-sizing:border-box;padding:8px 34px 8px 12px;font:12px/1.55 system-ui,-apple-system,'Segoe UI',sans-serif;color:#fff;background:rgba(122,26,26,.94);backdrop-filter:blur(10px);white-space:pre-wrap";
+  label=document.createElement("span");
+  var close=document.createElement("button");
+  close.type="button";close.textContent="\\u00d7";
+  close.style.cssText="position:absolute;right:6px;top:3px;background:none;border:0;color:inherit;font:16px/1 system-ui;cursor:pointer";
+  close.title="收起这条提示";
+  close.onclick=function(){box.style.display="none"};
+  box.appendChild(label);box.appendChild(close);
+  (document.body||document.documentElement).appendChild(box);
+  return box;
+}
+function paint(message){
+  if(!message){if(box)box.style.display="none";return}
+  banner();
+  if(label.textContent!==message)label.textContent=message;
+  box.style.display="block";
+}
+function statusMessage(){
+  var t=state.token;
+  if(!t||t.present!==true)return "未登录官网：消息发不出去。请点右下角 ⚙ →「登录官网」，在弹窗里登录一次，再回到这里发送。";
+  if(t.expired)return "官网登录已过期"+(state.last&&state.last.message?"："+flat(state.last.message):"")+"。请点右下角 ⚙ →「重新登录」一次。";
+  if(state.wasm===false)return "缺少 PoW 组件（sha3_wasm_bg.wasm），发送会失败：请重装插件或运行 npm run fetch:webview。";
+  return "";
+}
+function settle(){
+  var current=statusMessage();
+  if(current){paint(current);return}
+  if(Date.now()-failAt<60000){paint(failText);return}
+  paint("");
+}
+function check(){
+  fetch("/webchat/api/channel",{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){
+    if(!d||d.channel!=="web-quota")return;
+    state.token=d.token||null;state.site=d.site||"";state.wasm=d.wasm!==false;state.last=d.last||null;
+    settle();
+  }).catch(function(){});
+}
+function fail(message){failAt=Date.now();failText=message;paint(message)}
+function messageOf(body){
+  try{var j=JSON.parse(body);return (j&&j.error&&j.error.message)||(j&&j.message)||body}catch(e){return body}
+}
+function watch(){
+  var raw=window.fetch;
+  if(typeof raw!=="function")return;
+  window.fetch=function(input,init){
+    var url="";
+    try{url=typeof input==="string"?input:((input&&input.url)||"")}catch(e){}
+    var promise=raw.apply(this,arguments);
+    if(url.indexOf("/webchat/anthropic/v1/")<0)return promise;
+    var isSend=url.indexOf("/v1/messages")>=0;
+    var what=isSend?"发送":"上传";
+    return promise.then(function(res){
+      try{
+        if(!res.ok){
+          res.clone().text().then(function(body){fail(what+"失败（HTTP "+res.status+"）："+flat(messageOf(body)))}).catch(function(){});
+          check();
+        }else if(isSend&&typeof res.clone==="function"&&res.body){
+          res.clone().text().then(function(body){
+            var hit=/event: *error[\\s\\S]*?data:([\\s\\S]*?)(?:\\r?\\n\\r?\\n|$)/.exec(body);
+            if(hit){fail("发送失败："+flat(messageOf(hit[1].trim())));return}
+            failAt=0;failText="";settle();
+          }).catch(function(){});
+        }
+      }catch(e){}
+      return res;
+    });
+  };
+}
+watch();
+setTimeout(check,800);
+setInterval(function(){if(document.visibilityState!=="hidden")check()},12000);
+window.addEventListener("focus",check);
+})();</script>`
+
 /** 读取入口页并注入引导脚本与皮肤；每次现读，避免插件升级后仍引用旧的资源名。 */
 export function readIndex() {
   const html = fs.readFileSync(path.join(DIST, 'index.html'), 'utf8')
-  return html.replace(/<head>/iu, `<head>${BOOTSTRAP}${SKIN_CSS}${SKIN_SCRIPT}`)
+  return html.replace(/<head>/iu, `<head>${BOOTSTRAP}${SKIN_CSS}${SKIN_SCRIPT}${CHANNEL_SCRIPT}`)
 }
 
 async function sendFile(res, file) {
@@ -311,6 +405,23 @@ function lookupOldSession(home, key) {
   return typeof hit?.id === 'string' && hit.id.length > 0 ? { sessionId: hit.id } : undefined
 }
 
+/**
+ * 从 Anthropic content 里挑出附件 id。
+ * 面板上传成功后会把附件拼成 `{type:'image'|'document', source:{type:'file', file_id}}`，
+ * 这里的 id 就是官网的 `file-…`，正好能直接进 `ref_file_ids`。
+ */
+function fileIdsOf(content) {
+  if (!Array.isArray(content)) return []
+  const ids = []
+  for (const part of content) {
+    if (part === null || typeof part !== 'object') continue
+    if (part.type !== 'image' && part.type !== 'document') continue
+    const id = part.source?.file_id
+    if (typeof id === 'string' && id.length > 0) ids.push(id)
+  }
+  return [...new Set(ids)]
+}
+
 async function handleMessages(ctx, config, home, req, res) {
   let body
   try {
@@ -323,18 +434,31 @@ async function handleMessages(ctx, config, home, req, res) {
   const messages = Array.isArray(body.messages) ? body.messages : []
   const lastUser = [...messages].reverse().find(message => message && message.role === 'user')
   const question = textOfContent(lastUser?.content).trim()
-  if (!question) {
+  const fileIds = fileIdsOf(lastUser?.content)
+  if (!question && fileIds.length === 0) {
     sendJson(res, { error: { message: '没有可发送的用户消息' } }, 400)
     return
   }
+  // 只发附件、不写字也行；官网那边 prompt 不能为空。
+  const prompt = question || '请查看我上传的文件。'
 
   const firstUser = messages.find(message => message && message.role === 'user')
+  // 只带附件、没有文字的首条消息，也要和「另一张附件」区分开，否则两段对话会共用一条官网线程。
+  const firstFileIds = fileIdsOf(firstUser?.content)
   const conversationKey = createHash('sha1')
-    .update(`${textOfContent(body.system)}\u0000${textOfContent(firstUser?.content)}`)
+    .update(
+      `${textOfContent(body.system)}\u0000${textOfContent(firstUser?.content)}${firstFileIds.length > 0 ? `\u0000${firstFileIds.join(',')}` : ''}`,
+    )
     .digest('hex')
 
   // 这条会话是不是从官网导入的旧历史？是的话，续聊要接回原来那条线程。
-  const userTexts = messages.filter(message => message && message.role === 'user').map(message => textOfContent(message.content))
+  const userTexts = messages
+    .filter(message => message && message.role === 'user')
+    .map((message) => {
+      const ids = fileIdsOf(message.content)
+      const text = textOfContent(message.content)
+      return ids.length === 0 ? text : `${text}\u0000${ids.join(',')}`
+    })
   const historyKey = userTexts.length > 1
     ? createHash('sha1').update(userTexts.slice(0, -1).join('\u0000')).digest('hex')
     : ''
@@ -366,9 +490,13 @@ async function handleMessages(ctx, config, home, req, res) {
   send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
 
   let answer = ''
+  // 令牌就在这个目录里：必须和 site-proxy 的写入位置同一个（DSH_HOME，而非固定 ~/.dsh）。
+  const storeDir = path.join(home, 'deepseek-web')
   try {
     const result = await complete({
-      prompt: question,
+      prompt,
+      fileIds,
+      storeDir,
       conversationKey,
       seed,
       thinking: Boolean(body.thinking) || /reason/iu.test(String(body.model ?? '')),
@@ -392,24 +520,90 @@ async function handleMessages(ctx, config, home, req, res) {
     send('message_stop', { type: 'message_stop' })
     res.end()
     // 记忆库是旁路：写失败不影响这轮对话。
-    void rememberExchange({ question, answer })
+    void rememberExchange({ question: question || prompt, answer })
   } catch (error) {
-    send('error', { type: 'error', error: { type: 'api_error', message: String(error?.message ?? error) } })
+    const message = String(error?.message ?? error)
+    // 通道日志与宿主控制台各留一句：只记状态与原因，不碰令牌与正文。
+    recordChannelEvent(storeDir, { kind: 'turn-failed', status: error?.status ?? 502, message })
+    try {
+      console.warn(`[chat-in-dsh] 对话失败（status=${error?.status ?? '?'}）：${message}`)
+    } catch {
+      // 控制台不可用无关紧要。
+    }
+    send('error', { type: 'error', error: { type: 'api_error', message } })
     res.end()
   }
 }
 
-/** 附件上传转发：网页额度通道暂不支持附件，明确告知而不是静默失败。 */
-async function proxyFiles(ctx, config, req, res, pathname) {
-  sendJson(res, { error: { message: '网页额度通道暂不支持附件上传' } }, 501)
+/**
+ * 附件上传：面板说 Anthropic Files API，宿主翻成官网 `upload_file`。
+ *
+ * 官网这一步比对话多一道坎：上传完只是 PENDING，解析成 SUCCESS 之前把 id
+ * 放进 `ref_file_ids` 会被 `biz_code 9 invalid ref file id` 拒掉。所以这里等解析完
+ * 再把 id 交回去——面板拿到 id 会自己拼成 image/document 块。
+ */
+async function proxyFiles(ctx, config, home, req, res, pathname) {
+  const method = (req.method ?? 'GET').toUpperCase()
+  if (method !== 'POST') {
+    sendJson(res, { error: { message: '只支持上传（POST /webchat/anthropic/v1/files）' } }, 405)
+    return
+  }
+  const contentType = String(req.headers['content-type'] ?? '')
+  if (!/^multipart\/form-data/iu.test(contentType)) {
+    sendJson(res, { error: { message: '需要 multipart/form-data' } }, 415)
+    return
+  }
+  let raw
+  try {
+    raw = await readBody(req)
+  } catch (error) {
+    sendJson(res, { error: { message: String(error?.message ?? error) } }, 413)
+    return
+  }
+  if (raw.length === 0) {
+    sendJson(res, { error: { message: '没有收到文件内容' } }, 400)
+    return
+  }
+  let form
+  try {
+    form = await new Response(raw, { headers: { 'content-type': contentType } }).formData()
+  } catch {
+    sendJson(res, { error: { message: '请求体不是合法的 multipart' } }, 400)
+    return
+  }
+  const file = form.get('file')
+  if (file === null || typeof file === 'string') {
+    sendJson(res, { error: { message: '缺少 file 字段' } }, 400)
+    return
+  }
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const result = await uploadForPanel({
+      buffer,
+      filename: typeof file.name === 'string' && file.name.length > 0 ? file.name : 'file',
+      mimeType: typeof file.type === 'string' && file.type.length > 0 ? file.type : 'application/octet-stream',
+      storeDir: path.join(home, 'deepseek-web'),
+      wasmFile: WASM_FILE,
+      timeoutMs: 90000,
+    })
+    sendJson(res, result)
+  } catch (error) {
+    const message = String(error?.message ?? error)
+    recordChannelEvent(path.join(home, 'deepseek-web'), {
+      kind: 'upload-failed',
+      status: error?.status ?? 502,
+      message,
+    })
+    sendJson(res, { error: { message } }, error?.status ?? 502)
+  }
 }
 /** 语音输入 / 朗读：网页额度通道暂不支持，明确告知。 */
 async function proxyTools(ctx, config, req, res, pathname) {
   sendJson(res, { error: { message: '网页额度通道暂不支持语音接口' } }, 501)
 }
 
-/** 自检：入口页、静态资源、一次真实生成。 */
-async function selfTest(ctx, config) {
+/** 自检：入口页、静态资源、令牌与 PoW 组件。 */
+async function selfTest(ctx, config, home) {
   const checks = []
   const add = (name, ok, detail) => checks.push({ name, ok, detail })
   try {
@@ -425,9 +619,11 @@ async function selfTest(ctx, config) {
     }
   })()
   add('static', main !== undefined && fs.existsSync(path.join(DIST, main)), main ?? 'not found')
-  const token = readToken()
-  add('token', Boolean(token), token ? '站点令牌已镜像（本地只读）' : '还没有站点令牌：请先打开一次 DeepSeek 面板')
-  add('wasm', fs.existsSync(WASM_FILE), 'sha3_wasm_bg.wasm')
+  const health = channelHealth({ storeDir: path.join(home, 'deepseek-web'), wasmFile: WASM_FILE })
+  add('token', health.token.present, health.token.present
+    ? `站点令牌已镜像（${health.token.expired ? '但上一次请求被拒，建议重新登录' : '有效期内'}）`
+    : '还没有站点令牌：请点 ⚙ →「登录官网」')
+  add('wasm', health.wasm, 'sha3_wasm_bg.wasm')
   return { ok: checks.every(check => check.ok), checks }
 }
 
@@ -502,7 +698,7 @@ export function createWebview(ctx, config, home) {
     }
     if (pathname === '/webchat/api/self-test' && isGet) {
       try {
-        sendJson(res, await selfTest(ctx, config))
+        sendJson(res, await selfTest(ctx, config, home))
       } catch (error) {
         sendJson(res, { ok: false, error: String(error?.message ?? error) }, 500)
       }
@@ -511,7 +707,6 @@ export function createWebview(ctx, config, home) {
 
     // 账号与历史：面板右上角那个小齿轮读的就这两条。
     if (pathname === '/webchat/api/account' && isGet) {
-      const dir = path.join(home, 'deepseek-web')
       let staged = 0
       try {
         staged = fs.readdirSync(path.join(home, 'webchat-imports')).filter(name => name.endsWith('.json')).length
@@ -524,9 +719,16 @@ export function createWebview(ctx, config, home) {
       } catch {
         known = 0
       }
+      const health = channelHealth({
+        storeDir: path.join(home, 'deepseek-web'),
+        wasmFile: WASM_FILE,
+        siteUrl: typeof config.siteUrl === 'function' ? config.siteUrl() : '',
+      })
       sendJson(res, {
-        token: tokenStatus(dir),
-        site: typeof config.siteUrl === 'function' ? config.siteUrl() : '',
+        token: health.token,
+        wasm: health.wasm,
+        last: health.last,
+        site: health.site,
         known,
         staged,
       })
@@ -560,15 +762,14 @@ export function createWebview(ctx, config, home) {
       return
     }
 
-    // 通道自检：令牌、wasm 是否就位（不打真实请求，不耗额度）。
+    // 通道自检：令牌、PoW 组件、最近一次失败的原因（不打真实请求，不耗额度）。
     if (pathname === '/webchat/api/channel' && isGet) {
-      sendJson(res, {
-        channel: 'web-quota',
-        token: tokenStatus(),
-        wasm: fs.existsSync(WASM_FILE),
+      sendJson(res, channelHealth({
+        storeDir: path.join(home, 'deepseek-web'),
+        wasmFile: WASM_FILE,
         // 令牌过期时的刷新入口：打开它，官网会用自己的登录态再发一次令牌。
-        site: typeof config.siteUrl === 'function' ? config.siteUrl() : '',
-      })
+        siteUrl: typeof config.siteUrl === 'function' ? config.siteUrl() : '',
+      }))
       return
     }
 
@@ -590,7 +791,7 @@ export function createWebview(ctx, config, home) {
 
     if (pathname.startsWith('/webchat/anthropic/v1/files')) {
       try {
-        await proxyFiles(ctx, config, req, res, pathname)
+        await proxyFiles(ctx, config, home, req, res, pathname)
       } catch (error) {
         if (!res.headersSent) sendJson(res, { error: { message: String(error?.message ?? error) } }, 502)
         else res.destroy()

@@ -370,11 +370,19 @@ window.__ModuleLoader__.load({
       const [info, setInfo] = React.useState(null)
       const [busy, setBusy] = React.useState('')
       const [note, setNote] = React.useState('')
+      const hadToken = React.useRef(false)
 
       const refresh = React.useCallback(async () => {
         try {
           const res = await fetch('/webchat/api/account', { cache: 'no-store' })
-          if (res.ok) setInfo(await res.json())
+          if (!res.ok) return
+          const data = await res.json()
+          setInfo(data)
+          // 登录窗口开着的时候，令牌一落盘就告诉一声——省得阁下一遍遍重发试。
+          if (data?.token?.present && !hadToken.current) {
+            hadToken.current = true
+            setNote('已抄到官网令牌：可以发送了 ✓')
+          }
         } catch (_error) {
           // 面板刚起来时接口可能还没就绪，下一轮再试。
         }
@@ -418,8 +426,10 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const dot = info?.token?.present ? '#4ade80' : '#f87171'
-      const status = info?.token?.present ? '已登录' : '未登录'
+      const dot = info?.token?.present && !info.token.expired ? '#4ade80' : info?.token?.present ? '#fbbf24' : '#f87171'
+      const status = info?.token?.present ? (info.token.expired ? '已登录（可能过期）' : '已登录') : '未登录'
+      const last = info?.last && info.last.kind !== 'ok' && info.last.kind !== 'token-captured' ? info.last : null
+      const lastText = last?.message ? String(last.message).replace(/\s+/g, ' ').slice(0, 120) : ''
 
       const buttonStyle = {
         appearance: 'none',
@@ -481,8 +491,12 @@ window.__ModuleLoader__.load({
             onClick: () => setOpen(false),
             style: { marginLeft: 'auto', background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14 },
           }, '×')),
-        h('div', { style: { opacity: 0.8, marginBottom: 8 } },
+        h('div', { style: { opacity: 0.8, marginBottom: 6 } },
           `官网已知会话 ${info?.known ?? 0} 条 · 待面板收下 ${info?.staged ?? 0} 条`),
+        h('div', { style: { opacity: 0.72, marginBottom: 6 } },
+          `通道 web-quota · PoW ${info?.wasm === false ? '缺失' : '就位'}`
+          + (info?.site ? ` · 登录代理 ${String(info.site).replace(/^https?:\/\//u, '').replace(/\/$/u, '')}` : ' · 登录代理未就绪')),
+        lastText ? h('div', { style: { marginBottom: 6, color: '#fca5a5' } }, `最近一次失败：${lastText}`) : null,
         h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
           h('button', { type: 'button', onClick: login, style: buttonStyle }, info?.token?.present ? '重新登录' : '登录官网'),
           h('button', {
@@ -497,6 +511,10 @@ window.__ModuleLoader__.load({
             style: buttonStyle,
           }, '重新载入')),
         note ? h('div', { style: { marginTop: 8, opacity: 0.85 } }, note) : null,
+        !info?.token?.present
+          ? h('div', { style: { marginTop: 6, opacity: 0.6, fontSize: 11 } },
+              '登录后请在弹窗里停一两秒：令牌是官网自己发出请求的那一刻被抄下来的，这一步没走完，发送只会得到一句通用错误。')
+          : null,
         h('div', { style: { marginTop: 6, opacity: 0.55, fontSize: 11 } },
           '登录在自己电脑的浏览器里完成；令牌只在本机保存。'))
     }

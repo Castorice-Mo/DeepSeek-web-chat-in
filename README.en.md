@@ -4,7 +4,7 @@ Embed the official DeepSeek web chat UI in the DeepSeek Harness (DSH) sidebar,
 **billing your own web-account quota**, streaming every reply into the memory store,
 and adapting to whatever theme and wallpaper the host uses.
 
-Version `2.0.0-dshw.3` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
+Version `2.0.0-dshw.4` · MIT · a local fork of [YinkaiYu/chat-in-dsh](https://github.com/YinkaiYu/chat-in-dsh)
 
 Repository: https://github.com/Castorice-Mo/DeepSeek-web-chat-in
 
@@ -34,9 +34,11 @@ toggles were simply unreachable. Dropping the site into a panel directly hits th
 | History import | Captures the site's own session list + one active fetch (≤100), converts and stages it | `POST /webchat/api/history/import` |
 | Incremental sync | On panel open / window refocus, fetches only sessions the site changed since last pickup; an idle run costs one list request | `POST /webchat/api/sync` |
 | Continue old threads | Fingerprints the user-message sequence to resume the original official thread | `src/history.js` |
+| Attachments | The panel uploads a photo/file; the host solves PoW, calls the official `upload_file`, waits for parsing, then sends the id as `ref_file_ids` | `POST /webchat/anthropic/v1/files` |
+| Visible failures | A red banner in the panel names the real reason (not signed in / token expired / upstream 502); sanitised `channel-log.jsonl` behind it | injected `CHANNEL_SCRIPT`, `GET /webchat/api/channel` |
 | Adaptive wallpaper | Transparent surfaces; light/dark glass follows the host | injected `SKIN_CSS` / `SKIN_SCRIPT` |
 
-**Not supported (returns 501, never pretends)**: attachments, voice input / TTS.
+**Not supported (returns 501, never pretends)**: voice input / TTS.
 
 ## Install
 
@@ -51,7 +53,7 @@ link:<path-to-this-directory>
 or at the packaged tarball:
 
 ```
-file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.3.tgz
+file:<download-dir>/castorice-mo-chat-in-dsh-2.0.0-dshw.4.tgz
 ```
 
 Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appears in the sidebar.
@@ -79,14 +81,22 @@ Verified: the fetched tree is byte-identical (SHA-256 per file) to the one shipp
 ## Usage
 
 1. Open the panel, click the **⚙** in the bottom-right corner.
-2. **Sign in** — log in with *your own* web account in the window that opens. The token is
-   captured by the local loopback proxy (`127.0.0.1:8899`, falling forward to 8910).
+2. **Sign in** — log in with *your own* web account in the window that opens, then **stay on that
+   page for a second or two**. The token is captured by the local loopback proxy
+   (`127.0.0.1:8899`, falling forward to 8910) from the first `Authorization: Bearer` request the
+   site itself sends after login; skip that and sends fail with nothing but a generic error.
 3. **Import history** once for the full backfill (worth doing on an old account). After that you
    do not need to click it again: opening the panel or switching back to DSH runs an incremental
    sync, which brings in conversations created or continued on the official site.
 
 Everything persistent stays local under `~/.dsh/deepseek-web/` (token, cookie jar, session
-list, thread fingerprints) and `~/.dsh/webchat-imports/` (staging for the panel import).
+list, thread fingerprints, `channel-log.jsonl`) and `~/.dsh/webchat-imports/` (staging for the
+panel import). `~/.dsh` here means `$DSH_HOME`; on a machine with a custom `DSH_HOME` everything
+lives under `$DSH_HOME/deepseek-web/`, and the plugin reads and writes that same place.
+
+Daily use: type to chat, attach photos or files with the composer's attachment button (the host
+waits for the official parser, usually 2–4 s for images, then sends it as `ref_file_ids`), resume
+imported threads, and use `Ctrl/Cmd + wheel` (or the top-centre zoom bubble) to scale the panel.
 
 ## Input / output examples
 
@@ -115,9 +125,28 @@ event: message_stop
 Account status:
 
 ```json
-{ "token": { "present": true, "length": 64, "at": "2026-11-22T05:35:54.267Z" },
-  "site": "http://127.0.0.1:8899/", "known": 0, "staged": 0 }
+{ "token": { "present": true, "length": 64, "at": "2026-11-22T05:35:54.267Z", "expired": false },
+  "wasm": true,
+  "last": { "at": "2026-11-22T11:40:02.311Z", "kind": "ok", "status": 200, "chars": 6, "ms": 2180 },
+  "site": "http://127.0.0.1:8899/", "known": 100, "staged": 0 }
 ```
+
+Channel self-check (no quota spent, no real upstream request):
+
+```json
+GET /webchat/api/channel
+{ "channel": "web-quota",
+  "token": { "present": true, "length": 64, "expired": false },
+  "wasm": true, "site": "http://127.0.0.1:8899/",
+  "store": "C:\\Users\\<you>\\.dsh\\deepseek-web",
+  "last": { "at": "…", "kind": "ok", "status": 200, "chars": 6, "ms": 2180 },
+  "recent": [ { "at": "…", "kind": "token-captured", "status": 200 }, { "at": "…", "kind": "ok", "status": 200 } ] }
+```
+
+- `token.present=false` → no token yet: ⚙ → *Sign in*, then wait a second on the login page
+- `token.expired=true` → the last real request was rejected as an invalid token: sign in again
+- `wasm=false` → the bundled PoW component is missing: reinstall
+- `store` → where the token actually lives (handy when `DSH_HOME` is custom)
 
 History import (a real run):
 
@@ -135,10 +164,22 @@ Incremental sync (real runs: 100 uncached sessions pending, then nothing new):
 Sessions already picked up are recorded in `~/.dsh/deepseek-web/sync-state.json`, so an
 unchanged `updated_at` is never fetched twice.
 
+Attachment upload (real run: a 64×64 solid-red PNG, then “what colour is this image?”):
+
+```json
+POST /webchat/anthropic/v1/files (multipart: file)
+→ 200 { "id": "file-c4c079b0-…", "type": "file", "filename": "dsh-red-final.png",
+        "mime_type": "image/png", "size": 181, "model_kind": "VISION", "is_image": true }
+→ model answer: 红色        (upload + parse took 3.5 s; a txt file took 2.1 s and answered 42)
+```
+
+The host waits until the official side reports the file as `SUCCESS`; sending a `ref_file_id`
+while it is still `PARSING` is rejected upstream with `biz_code 9 invalid ref file id`.
+
 Unsupported endpoints answer honestly:
 
 ```json
-501 {"error":{"message":"网页额度通道暂不支持附件上传"}}
+501 {"error":{"message":"网页额度通道暂不支持语音接口"}}
 ```
 
 ## Privacy
@@ -161,9 +202,45 @@ modified by it.
 - Sync is not realtime: no polling and no long-lived connection. It is triggered on panel mount
   and on window refocus (throttled to 5 minutes), so a conversation just created on the site
   arrives when you switch back.
-- Attachment / voice endpoints are unsupported (501); search results depend on the site.
+- Voice endpoints are unsupported (501); search results depend on the site.
+- Attachments land in your own official account storage: uploads use the site's own
+  `upload_file`, and the site front-end exposes no delete-file endpoint (only upload / fetch /
+  fork), so the plugin cannot remove them either.
+- Uploads must be parsed before use: `PENDING` → `PARSING` → `SUCCESS`. The host waits up to
+  90 s and then reports “file is still being parsed” instead of letting the panel say “server busy”.
+- One request body is capped at 64 MB, with at most 50 attachment ids per turn.
 - The model id is fixed to `deepseek-flash`; the actual model is chosen upstream.
 - Site redesigns may break the interfaces — update the plugin when that happens.
+
+## Troubleshooting: a message would not send
+
+The panel now shows a red banner with the actual reason instead of the generic
+"消息未能发送，请稍后重试". Without the banner, open ⚙ (last failure there) or read
+`~/.dsh/deepseek-web/channel-log.jsonl` — every line is a sanitised one-liner.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Banner: **未登录官网** (not signed in) | `token.json` was never captured | ⚙ → *Sign in*, stay on the page for a second |
+| Banner: **登录已过期** (login expired) | upstream rejected the last request as an invalid token | ⚙ → sign in again |
+| Banner: **缺少 PoW 组件** | the bundled `sha3_wasm_bg.wasm` is gone | reinstall / `npm run fetch:webview` |
+| Banner: **HTTP 429** | rate limited | wait a moment and resend |
+| Banner: **HTTP 502 · code XXX** | upstream error, passed through verbatim | retry; if it persists the site changed — update the plugin |
+| Panel keeps saying "server busy" | the attachment is still being parsed upstream | wait for `SUCCESS` (up to 90 s) |
+
+What people ask most:
+
+1. **When exactly is the token written?** Not at "login succeeded", but at the first request the
+   site itself sends with `Authorization: Bearer` afterwards — the loopback proxy copies it into
+   `$DSH_HOME/deepseek-web/token.json` (0600). Hence "stay a second on the login page".
+2. **Can "not signed in" be told apart from "send failed"?** Yes: `token.present` says whether a
+   token exists, `token.expired` says whether the last real request was rejected as invalid; the
+   banner phrases the two separately, and any other failure carries the upstream message.
+3. **Is the upstream status/code surfaced?** Yes — the host folds it into one readable line
+   (`HTTP 401 · code 40003`), sends it as the SSE `error` event and writes it to the channel log;
+   the banner shows exactly that line.
+
+The log holds categories, status codes and one plain sentence: **no token, no cookie, no request
+headers, no message bodies**.
 
 ## Third-party assets
 

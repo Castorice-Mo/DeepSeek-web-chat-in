@@ -24,7 +24,7 @@ export function apply(ctx, config = {}) {
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
   // 官网小代理：面板走官网额度需要浏览器里的令牌，这是唯一能把它抄下来的路径。
   // 同源（8899）意味着浏览器里既有的登录态可以直接复用，打开一次就能刷新。
-  const site = startSiteProxy(Number(config.sitePort) || 8899)
+  const site = startSiteProxy(Number(config.sitePort) || 8899, home)
   const webview = createWebview(ctx, { ...config, siteUrl: () => site.url() }, home)
   ctx.effect(() => () => site.stop(), 'webchat.site-proxy')
   ctx.effect(() => ctx.webServer.register({

@@ -21,6 +21,18 @@ import { join } from 'node:path'
 
 const BASE = process.env.DEEPSEEK_WEB_BASE || 'https://chat.deepseek.com'
 const COMPLETION_PATH = '/api/v0/chat/completion'
+
+/**
+ * 本机存储目录。
+ *
+ * 必须与 `site-proxy` 的写入位置是**同一个**：DSH_HOME 与 `homedir()` 不是一回事，
+ * 自定义过 DSH_HOME 的机器上，写在一处、读在另一处就会得到「令牌明明登录了却不存在」。
+ * 所以凡是没显式传 storeDir 的地方，都从这里取，而不是各自拼 `~/.dsh`。
+ */
+export function defaultStoreDir() {
+  const home = process.env.DSH_HOME || join(homedir(), '.dsh')
+  return join(home, 'deepseek-web')
+}
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
@@ -35,7 +47,7 @@ const UA =
 const conversations = new Map()
 
 let wasmPromise
-function loadWasm(file) {
+export function loadWasm(file) {
   if (!wasmPromise) {
     wasmPromise = WebAssembly.instantiate(fs.readFileSync(file), {}).then(result => result.instance.exports)
   }
@@ -81,7 +93,7 @@ function baseHeaders(token) {
  * 这里只读、不改。
  * @returns {string | undefined}
  */
-export function readToken(storeDir = join(homedir(), '.dsh', 'deepseek-web')) {
+export function readToken(storeDir = defaultStoreDir()) {
   try {
     const raw = JSON.parse(fs.readFileSync(join(storeDir, 'token.json'), 'utf8'))
     return typeof raw?.token === 'string' && raw.token.length > 20 ? raw.token : undefined
@@ -90,12 +102,107 @@ export function readToken(storeDir = join(homedir(), '.dsh', 'deepseek-web')) {
   }
 }
 
-export function tokenStatus(storeDir = join(homedir(), '.dsh', 'deepseek-web')) {
+/**
+ * 通道事件日志（`channel-log.jsonl`）。
+ *
+ * 面板那端只会弹一句「消息未能发送」，报障时最想知道的是「卡在哪一步」。
+ * 这里只记分类、状态码与一句人话：**不写令牌、不写请求头、不写对话正文**。
+ * 上限 200 行，超了从最早的丢。
+ */
+const CHANNEL_LOG_LIMIT = 200
+
+function channelLogFile(storeDir) {
+  return join(storeDir, 'channel-log.jsonl')
+}
+
+/** 追加一条通道事件；失败静默（日志坏了不能影响对话）。 */
+export function recordChannelEvent(storeDir, event) {
+  const dir = storeDir || defaultStoreDir()
   try {
-    const raw = JSON.parse(fs.readFileSync(join(storeDir, 'token.json'), 'utf8'))
-    return { present: true, length: String(raw.token || '').length, at: raw.at }
+    fs.mkdirSync(dir, { recursive: true })
+    const file = channelLogFile(dir)
+    let lines = []
+    try {
+      lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-(CHANNEL_LOG_LIMIT - 1))
+    } catch {
+      lines = []
+    }
+    const message = event?.message === undefined ? undefined : String(event.message).slice(0, 300)
+    lines.push(JSON.stringify({ at: new Date().toISOString(), ...event, ...(message === undefined ? {} : { message }) }))
+    fs.writeFileSync(file, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 })
   } catch {
-    return { present: false }
+    // 日志是旁路：写不进去也不该改变请求的结果。
+  }
+}
+
+/** 读最近的通道事件（新的在后）。 */
+export function readChannelEvents(storeDir = defaultStoreDir(), limit = 5) {
+  try {
+    const lines = fs.readFileSync(channelLogFile(storeDir), 'utf8').split('\n').filter(Boolean).slice(-limit)
+    const events = []
+    for (const line of lines) {
+      try {
+        events.push(JSON.parse(line))
+      } catch {
+        // 半行坏字跳过。
+      }
+    }
+    return events
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 令牌状态：有没有、多久写的、还能不能用。
+ *
+ * `expired` 不是过期时间的推断——官网的令牌不带宽限信息——而是「上一次真实请求
+ * 被官网以令牌无效拒掉、并且之后既没有成功过、也没有换过新令牌」这一事实：
+ * channel-log 里最后一条 `kind: 'token'` 晚于令牌落盘时间、且后面没有 `ok` /
+ * `token-captured`，才判为过期。
+ */
+export function tokenStatus(storeDir = defaultStoreDir()) {
+  let raw
+  try {
+    raw = JSON.parse(fs.readFileSync(join(storeDir, 'token.json'), 'utf8'))
+  } catch {
+    raw = undefined
+  }
+  const present = typeof raw?.token === 'string' && raw.token.length > 20
+  const status = {
+    present,
+    length: present ? raw.token.length : 0,
+    at: present ? raw.at : undefined,
+    expired: false,
+  }
+  if (present) {
+    // 只有「最后一次失败是令牌无效、且之后再没有成功过、也没有换过新令牌」才算过期；
+    // 否则偶尔一次 401（风控、瞬时抖动）会让横幅一直挂着「请重新登录」。
+    const events = readChannelEvents(storeDir, 30)
+    const lastFailure = [...events].reverse().find(event => event.kind === 'token')
+    if (lastFailure) {
+      const recovered = events.some(
+        event => (event.kind === 'ok' || event.kind === 'token-captured') && String(event.at ?? '') > String(lastFailure.at ?? ''),
+      )
+      if (!recovered && String(lastFailure.at ?? '') > String(raw.at ?? '')) status.expired = true
+    }
+  }
+  return status
+}
+
+/** 汇总一条自检口径：令牌、PoW 组件、代理地址、最近事件。 */
+export function channelHealth(options = {}) {
+  const storeDir = options.storeDir || defaultStoreDir()
+  const events = readChannelEvents(storeDir, 6)
+  return {
+    channel: 'web-quota',
+    token: tokenStatus(storeDir),
+    wasm: options.wasmFile ? fs.existsSync(options.wasmFile) : false,
+    site: options.siteUrl || '',
+    // 令牌实际落在哪：自定义过 DSH_HOME 的机器上，这一行能省掉大量猜测。
+    store: storeDir,
+    last: events.at(-1) ?? null,
+    recent: events,
   }
 }
 
@@ -114,7 +221,7 @@ async function createSession(token) {
   throw new Error(`建会话失败 HTTP ${res.status}`)
 }
 
-async function powHeader(token, wasm, targetPath) {
+export async function powHeader(token, wasm, targetPath) {
   const res = await fetch(`${BASE}/api/v0/chat/create_pow_challenge`, {
     method: 'POST',
     headers: baseHeaders(token),
@@ -144,7 +251,7 @@ async function powHeader(token, wasm, targetPath) {
  * 只对自建的临时会话调用；阁下的旧线程不要碰。
  */
 export async function deleteSession(sessionId, options = {}) {
-  const storeDir = options.storeDir || join(homedir(), '.dsh', 'deepseek-web')
+  const storeDir = options.storeDir || defaultStoreDir()
   const token = readToken(storeDir)
   if (!token) return false
   const send = async header => {
@@ -225,6 +332,43 @@ async function latestMessageId(token, sessionId) {
 }
 
 /**
+ * 把官网的非 2xx 翻成一句能照着做的话。
+ *
+ * 官网的错误体同时带 `code` 与 `msg`（`biz_code` 在少数接口上），令牌无效是
+ * `40003`/HTTP 401，PoW 重放是 `40301`。面板那端只会显示通用提示，所以分类与
+ * 原文都从这里给出去，并顺手记进通道日志。
+ */
+function classifyUpstream(status, bodyText) {
+  const text = String(bodyText || '')
+  let code
+  let msg
+  try {
+    const parsed = JSON.parse(text)
+    code = parsed?.code ?? parsed?.biz_code
+    msg = parsed?.msg ?? parsed?.message
+  } catch {
+    // 非 JSON：只留状态码。
+  }
+  const detail = [status ? `HTTP ${status}` : '', code !== undefined ? `code ${code}` : '', msg ? String(msg).slice(0, 120) : '']
+    .filter(Boolean)
+    .join(' · ')
+  if (status === 401 || code === 40002 || code === 40003 || /missing token|invalid token|token expired/iu.test(text)) {
+    return {
+      kind: 'token',
+      status: 401,
+      message: `官网说登录已失效（${detail}）：请点右下角 ⚙ →「登录官网」重新登录一次。`,
+    }
+  }
+  if (code === 40301 || /invalid_pow/iu.test(text)) {
+    return { kind: 'pow', status: 502, message: `PoW 校验失败（${detail}）：再发一次通常会自己换一枚挑战。` }
+  }
+  if (status === 429) {
+    return { kind: 'rate', status: 502, message: `官网限流了（${detail}）：等一会儿再发。` }
+  }
+  return { kind: 'upstream', status: 502, message: `官网对话失败（${detail}）` }
+}
+
+/**
  * 跑一轮对话。
  *
  * @param {object} options
@@ -240,9 +384,21 @@ async function latestMessageId(token, sessionId) {
  */
 export async function complete(options) {
   const { prompt, conversationKey, seed, thinking = false, search = false, wasmFile, onDelta } = options
-  const storeDir = options.storeDir || join(homedir(), '.dsh', 'deepseek-web')
+  // 附件：面板传来的 file id 原样就是官网的 file-…，直接进 ref_file_ids。
+  const fileIds = Array.isArray(options.fileIds)
+    ? options.fileIds.filter(id => typeof id === 'string' && id.length > 0).slice(0, 50)
+    : []
+  const storeDir = options.storeDir || defaultStoreDir()
+  const startedAt = Date.now()
   const token = readToken(storeDir)
-  if (!token) throw Object.assign(new Error('还没有官网令牌：请先打开一次 DeepSeek 面板'), { status: 401 })
+  if (!token) {
+    // 这一支最值得记：报障的人往往就是卡在这里（登录窗口没走完、DSH_HOME 换过）。
+    recordChannelEvent(storeDir, { kind: 'no-token', status: 401, message: 'token.json 不存在或为空' })
+    throw Object.assign(
+      new Error('还没有官网令牌：请点右下角 ⚙ →「登录官网」，在弹窗里登录一次再发送。'),
+      { status: 401 },
+    )
+  }
 
   const wasm = await loadWasm(wasmFile)
   const key = conversationKey || createHash('sha1').update(prompt).digest('hex')
@@ -270,7 +426,7 @@ export async function complete(options) {
       parent_message_id: options.parentMessageId ?? state.lastMessageId ?? null,
       model_type: null,
       prompt,
-      ref_file_ids: [],
+      ref_file_ids: fileIds,
       thinking_enabled: Boolean(thinking),
       search_enabled: Boolean(search),
       preempt: false,
@@ -278,7 +434,9 @@ export async function complete(options) {
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw Object.assign(new Error(`官网对话失败 HTTP ${res.status} ${text.slice(0, 160)}`), { status: 502 })
+    const failure = classifyUpstream(res.status, text)
+    recordChannelEvent(storeDir, { kind: failure.kind, status: failure.status, http: res.status, message: failure.message })
+    throw Object.assign(new Error(failure.message), { status: failure.status })
   }
 
   const acc = { text: '' }
@@ -320,10 +478,21 @@ export async function complete(options) {
   }
   // 空流通常是风控或令牌问题；宁可报错，也不要让面板显示一片空白。
   if (acc.text.length === 0) {
-    throw Object.assign(new Error('官网没有返回任何内容（令牌失效或被风控拦截）'), { status: 502 })
+    recordChannelEvent(storeDir, { kind: 'empty', status: 502, message: '官网没有返回任何内容' })
+    throw Object.assign(
+      new Error('官网这次没有返回任何内容（登录可能已过期，或被风控拦截）：可先在 ⚙ 里重新登录一次。'),
+      { status: 502 },
+    )
   }
   if (messageId !== undefined) state.lastMessageId = messageId
   state.at = Date.now()
+  recordChannelEvent(storeDir, {
+    kind: 'ok',
+    status: 200,
+    chars: acc.text.length,
+    files: fileIds.length,
+    ms: Date.now() - startedAt,
+  })
   return { text: acc.text, sessionId: state.sessionId, messageId }
 }
 
