@@ -67,6 +67,7 @@
   },
   "author": "Castorice-Mo",
   "scripts": {
+    "prepare": "node scripts/fetch-webview.mjs",
     "fetch:webview": "node scripts/fetch-webview.mjs"
   }
 }

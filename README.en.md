@@ -60,7 +60,8 @@ Restart DSH (or reload the plugin). A “网页版 / DeepSeek web” entry appea
 `webview/dist` (the official chat-demo build — **153 files, 4.25 MB**) is **not tracked**. Fetch it after cloning:
 
 ```bash
-npm run fetch:webview
+npm install            # the prepare hook fetches the build automatically
+npm run fetch:webview  # or fetch it explicitly
 ```
 
 Verified: the fetched tree is byte-identical (SHA-256 per file) to the one shipped inside the upstream npm package `chat-in-dsh@1.3.2`.

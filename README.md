@@ -81,8 +81,9 @@ file:<下载目录>/castorice-mo-chat-in-dsh-2.0.0-dshw.1.tgz
 克隆后先把它取回来：
 
 ```bash
-npm run fetch:webview            # 按 package.json 里钉住的版本取回
-CHAT_DEMO_VERSION=1.3.2 npm run fetch:webview   # 也可指定上游版本
+npm install                      # 会自动执行 prepare 钩子完成取件
+npm run fetch:webview            # 也可手动指定版本重取
+CHAT_DEMO_VERSION=1.3.2 npm run fetch:webview
 ```
 
 已核对：取回的产物与上游 npm 包 `chat-in-dsh@1.3.2` 内那份**逐文件 SHA256 相同**，本仓库未做任何改动。
