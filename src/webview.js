@@ -592,6 +592,15 @@ export function createWebview(ctx, config, home) {
     }
 
     if (pathname === '/webchat' || pathname === '/webchat/') {
+      // 仓库只保存自有代码，前端产物要单独取回；缺了就明说，别丢一个空白页。
+      if (!fs.existsSync(path.join(DIST, 'index.html'))) {
+        const hint = '<meta charset="utf-8"><p style="font:14px/1.7 system-ui;padding:24px">'
+          + '缺少前端产物（<code>webview/dist</code>）。请在插件目录执行 '
+          + '<code>npm run fetch:webview</code>，然后重载本插件。</p>'
+        res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-length': Buffer.byteLength(hint) })
+        res.end(method === 'HEAD' ? undefined : hint)
+        return
+      }
       const html = readIndex()
       res.writeHead(200, {
         'content-type': MIME['.html'],
