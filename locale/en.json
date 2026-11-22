@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DeepSeek web chat panel",
+    "description": "Embeds the official DeepSeek chat UI in the DSH sidebar and bills your own web-account quota: sign in once, replies stream into the memory store in real time, account history can be imported and continued in its original thread. The panel is transparent and follows your host theme and wallpaper."
+  }
+}

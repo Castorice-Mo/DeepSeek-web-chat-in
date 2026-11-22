@@ -1,0 +1,12 @@
+# 忽略构建产物与依赖，保证仓库里只有源码与文档
+node_modules/
+*.tgz
+*.log
+*.tmp
+.tmp/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本机运行时数据（不属于仓库）
+*.jsonl
